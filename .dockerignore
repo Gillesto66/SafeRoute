@@ -1,0 +1,12 @@
+# Fait par Gillesto
+.git/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+data/cache/
+notebooks/
+tests/
+*.egg-info/
+target/
+.env

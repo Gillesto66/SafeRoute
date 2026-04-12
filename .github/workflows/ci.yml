@@ -1,0 +1,137 @@
+# Fait par Gillesto
+# ci.yml — Pipeline CI/CD GitHub Actions
+#
+# Déclenché sur : push sur main/develop, pull requests vers main
+# Jobs :
+#   1. test-python  : pytest (Phase 1, 2, 3) sans Rust
+#   2. test-rust    : cargo test (tests unitaires + intégration)
+#   3. build-wheel  : maturin build (wheel PyPI cross-platform)
+
+name: SafeRoute CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1 : Tests Python ────────────────────────────────────────────────────
+  test-python:
+    name: Tests Python (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Installer les dépendances Python
+        run: |
+          pip install --upgrade pip
+          pip install osmnx networkx geopandas shapely scipy numpy \
+                      fastapi "uvicorn[standard]" pydantic httpx \
+                      matplotlib folium \
+                      pytest pytest-asyncio pytest-mock httpx
+
+      - name: Ajouter saferoute au PYTHONPATH
+        run: echo "PYTHONPATH=$PYTHONPATH:${{ github.workspace }}/SafeRoute/bindings/python:${{ github.workspace }}/SafeRoute" >> $GITHUB_ENV
+
+      - name: Lancer les tests Phase 1
+        run: python -m pytest SafeRoute/tests/python/test_phase1.py -v --tb=short
+        working-directory: ${{ github.workspace }}
+
+      - name: Lancer les tests Phase 2
+        run: python -m pytest SafeRoute/tests/python/test_phase2.py -v --tb=short
+        working-directory: ${{ github.workspace }}
+
+      - name: Lancer les tests Phase 3 API
+        run: python -m pytest SafeRoute/tests/python/test_phase3_api.py -v --tb=short
+        working-directory: ${{ github.workspace }}
+
+      - name: Lancer les tests Phase 3 E2E
+        run: python -m pytest SafeRoute/tests/python/test_phase3_e2e.py -v --tb=short
+        working-directory: ${{ github.workspace }}
+
+      - name: Rapport de couverture
+        run: |
+          pip install pytest-cov
+          python -m pytest SafeRoute/tests/python/ \
+            --cov=SafeRoute/bindings/python/saferoute \
+            --cov=SafeRoute/api \
+            --cov-report=term-missing \
+            --tb=short
+        working-directory: ${{ github.workspace }}
+
+  # ── Job 2 : Tests Rust ──────────────────────────────────────────────────────
+  test-rust:
+    name: Tests Rust (cargo test)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SafeRoute/core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('SafeRoute/core/Cargo.toml') }}
+
+      - name: Vérification du formatage
+        run: cargo fmt --check
+        working-directory: SafeRoute/core
+
+      - name: Clippy (linting)
+        run: cargo clippy -- -D warnings
+        working-directory: SafeRoute/core
+
+      - name: Tests unitaires et d'intégration
+        run: cargo test --verbose
+        working-directory: SafeRoute/core
+
+  # ── Job 3 : Build wheel PyPI ────────────────────────────────────────────────
+  build-wheel:
+    name: Build wheel maturin
+    runs-on: ${{ matrix.os }}
+    needs: [test-python, test-rust]
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Installer maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        run: maturin build --release --out dist/
+        working-directory: SafeRoute/bindings/python
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: SafeRoute/bindings/python/dist/*.whl

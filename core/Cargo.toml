@@ -1,0 +1,33 @@
+# Fait par Gillesto
+[package]
+name = "saferoute-core"
+version = "0.1.0"
+edition = "2021"
+description = "SafeRoute — Moteur de calcul géospatial multi-objectif"
+authors = ["Gillesto"]
+
+[lib]
+name = "saferoute_core"
+crate-type = ["cdylib", "rlib"]  # cdylib pour PyO3, rlib pour les tests
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ordered-float = "4.2"
+thiserror = "1.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+approx = "0.5"
+
+# Tests d'intégration déclarés explicitement
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
