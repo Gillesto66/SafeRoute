@@ -1,0 +1,25 @@
+# Fait par Gillesto
+# audit.toml — Configuration cargo-audit pour SafeRoute
+#
+# Ce fichier permet d'ignorer des avis de sécurité spécifiques
+# avec une justification documentée.
+#
+# Format :
+#   [advisories.ignore]
+#   id = "RUSTSEC-XXXX-XXXX"
+#   reason = "Explication de pourquoi cet avis est ignoré"
+#
+# RÈGLE : aucun avis ne peut être ignoré sans justification écrite.
+# Tout avis ignoré doit être réévalué à chaque release.
+
+[advisories]
+# Aucun avis ignoré pour l'instant.
+# Exemple de format si nécessaire :
+# ignore = [
+#     { id = "RUSTSEC-2023-XXXX", reason = "Non exploitable dans notre contexte car..." }
+# ]
+ignore = []
+
+[output]
+# Afficher les avis de type "warning" comme des erreurs
+deny = ["warnings", "unmaintained", "unsound", "yanked"]

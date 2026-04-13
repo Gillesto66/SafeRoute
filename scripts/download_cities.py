@@ -19,8 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-# Ajoute le répertoire parent au path pour les imports
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bindings" / "python"))
+# Ajoute src/ au path pour les imports (structure src-layout)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 logging.basicConfig(
     level=logging.INFO,

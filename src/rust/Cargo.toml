@@ -1,0 +1,72 @@
+# Fait par Gillesto
+# src/rust/Cargo.toml — Crate saferoute-core
+#
+# Ce crate est le moteur de calcul Rust de SafeRoute.
+# Il est compilé par maturin en un module d'extension Python (.so / .pyd)
+# nommé `saferoute_core`, importable via :
+#   from saferoute.saferoute_core import PyGraph, compute_safe_routes
+#
+# Types de sortie :
+#   cdylib → module d'extension Python (.so / .pyd) — utilisé par maturin
+#   rlib   → bibliothèque Rust statique — utilisée par `cargo test`
+
+[package]
+name        = "saferoute-core"
+version     = "0.1.0"
+edition     = "2021"
+description = "SafeRoute — Moteur de calcul géospatial multi-objectif (A*pex, KDE, Pareto)"
+authors     = ["Gillesto"]
+license     = "MIT"
+repository  = "https://github.com/Gillesto66/SafeRoute"
+
+[lib]
+name        = "saferoute_core"
+crate-type  = ["cdylib", "rlib"]
+
+# ── Dépendances de production ─────────────────────────────────────────────────
+
+[dependencies]
+
+# Binding Python — génère le module d'extension .so / .pyd
+# La feature "extension-module" est requise pour les modules importables par Python.
+# Elle est activée via [tool.maturin] features dans pyproject.toml.
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+# Sérialisation JSON — protocole de communication Python ↔ Rust
+# Python sérialise le graphe OSMnx en JSON, Rust le désérialise.
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# f64 comparable dans BinaryHeap
+# f64 n'implémente pas Ord en Rust (à cause de NaN).
+# ordered-float fournit OrderedFloat<f64> qui implémente Ord.
+ordered-float = "4.2"
+
+# Gestion d'erreurs idiomatique
+# thiserror : dérive automatique de std::error::Error pour les types d'erreur
+# anyhow    : type d'erreur générique pour le code interne (non exposé à Python)
+thiserror = "1.0"
+anyhow    = "1.0"
+
+# Logging
+log        = "0.4"
+env_logger = "0.11"
+
+# ── Dépendances de développement / tests ─────────────────────────────────────
+
+[dev-dependencies]
+# Comparaisons flottantes dans les tests (assert_abs_diff_eq!, assert_relative_eq!)
+approx = "0.5"
+
+# ── Tests d'intégration ───────────────────────────────────────────────────────
+# Déclarés explicitement pour que `cargo test` les découvre.
+# Ces tests sont dans src/rust/tests/ (hors src/) → tests d'intégration Rust.
+# Ils testent l'API publique du crate comme un utilisateur externe.
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# ── Features ──────────────────────────────────────────────────────────────────
+# Aucune feature custom pour l'instant.
+# La feature "pyo3/extension-module" est activée par maturin via pyproject.toml.

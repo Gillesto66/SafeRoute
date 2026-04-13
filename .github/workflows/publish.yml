@@ -1,0 +1,421 @@
+# Fait par Gillesto
+# publish.yml — Pipeline de publication PyPI avec tous les gates de qualité
+#
+# Déclenchement : manuel (workflow_dispatch) depuis GitHub Actions
+# Cible : testpypi (validation) ou pypi (production)
+#
+# Gates dans l'ordre d'exécution :
+#   ① check-version   — tag git == pyproject.toml == Cargo.toml
+#   ② lint            — ruff (style) + mypy (types)
+#   ③ test-python     — pytest 102 tests
+#   ④ audit-rust      — cargo-audit (CVE)
+#   ⑤ test-rust       — cargo test (20 tests intégration)
+#   ⑥ build-wheel     — maturin build --release (matrice 3 OS × 3 Python)
+#   ⑦ audit-wheel     — check-wheel-contents (pas de fichiers parasites)
+#   ⑧ docs            — mkdocs build --strict
+#   ⑨ publish         — maturin publish → TestPyPI ou PyPI
+
+name: Publish to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Cible de publication"
+        required: true
+        default: "testpypi"
+        type: choice
+        options: [testpypi, pypi]
+
+# Empêche deux publications simultanées
+concurrency:
+  group: publish-${{ github.event.inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ① VERSIONING — tag git == pyproject.toml == Cargo.toml
+  # ════════════════════════════════════════════════════════════════════════════
+  check-version:
+    name: ① Vérification versioning (SemVer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # nécessaire pour lire les tags git
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Vérifier synchronisation pyproject.toml ↔ Cargo.toml ↔ tag git
+        run: |
+          set -euo pipefail
+
+          # Lire la version Python
+          PY_VERSION=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              d = tomllib.load(f)
+          print(d['project']['version'])
+          ")
+
+          # Lire la version Rust
+          RS_VERSION=$(python -c "
+          import tomllib
+          with open('src/rust/Cargo.toml', 'rb') as f:
+              d = tomllib.load(f)
+          print(d['package']['version'])
+          ")
+
+          echo "pyproject.toml : $PY_VERSION"
+          echo "Cargo.toml     : $RS_VERSION"
+
+          # Les deux versions doivent être identiques
+          if [ "$PY_VERSION" != "$RS_VERSION" ]; then
+            echo "❌ ERREUR : pyproject.toml ($PY_VERSION) ≠ Cargo.toml ($RS_VERSION)"
+            echo "   Exécutez : scripts/bump_version.sh <version>"
+            exit 1
+          fi
+
+          # Pour PyPI production : le tag git doit correspondre
+          if [ "${{ github.event.inputs.target }}" = "pypi" ]; then
+            GIT_TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || echo "NO_TAG")
+            EXPECTED_TAG="v${PY_VERSION}"
+            if [ "$GIT_TAG" != "$EXPECTED_TAG" ]; then
+              echo "❌ ERREUR : tag git ($GIT_TAG) ≠ version attendue ($EXPECTED_TAG)"
+              echo "   Exécutez : git tag $EXPECTED_TAG && git push origin $EXPECTED_TAG"
+              exit 1
+            fi
+            echo "✅ Tag git : $GIT_TAG"
+          fi
+
+          echo "✅ Versioning OK : $PY_VERSION"
+        working-directory: SafeRoute
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ② QUALITÉ PYTHON — ruff + mypy (PEP 561)
+  # ════════════════════════════════════════════════════════════════════════════
+  lint:
+    name: ② Qualité Python (ruff + mypy)
+    runs-on: ubuntu-latest
+    needs: check-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Installer les outils de qualité
+        run: |
+          pip install --upgrade pip
+          pip install ruff>=0.4 mypy>=1.10 \
+                      osmnx networkx geopandas shapely scipy numpy \
+                      httpx matplotlib folium platformdirs \
+                      fastapi pydantic
+
+      - name: ruff — vérification du style et des erreurs
+        run: |
+          echo "=== ruff check ==="
+          python -m ruff check src/
+          echo "=== ruff format (check only) ==="
+          python -m ruff format --check src/
+        working-directory: SafeRoute
+
+      - name: mypy — vérification des types (PEP 561)
+        run: |
+          python -m mypy src/saferoute/ \
+            --ignore-missing-imports \
+            --warn-return-any \
+            --warn-unused-ignores \
+            --no-error-summary
+        working-directory: SafeRoute
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ③ TESTS PYTHON — pytest
+  # ════════════════════════════════════════════════════════════════════════════
+  test-python:
+    name: ③ Tests Python (pytest)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Installer les dépendances
+        run: |
+          pip install --upgrade pip
+          pip install osmnx networkx geopandas shapely scipy numpy \
+                      fastapi "uvicorn[standard]" pydantic httpx \
+                      matplotlib folium platformdirs \
+                      pytest pytest-asyncio pytest-mock
+
+      - name: pytest — suite complète
+        run: python -m pytest tests/ -v --tb=short --strict-markers
+        working-directory: SafeRoute
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ④ SÉCURITÉ RUST — cargo-audit (CVE)
+  # ════════════════════════════════════════════════════════════════════════════
+  audit-rust:
+    name: ④ Audit sécurité Rust (cargo-audit)
+    runs-on: ubuntu-latest
+    needs: check-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('SafeRoute/src/rust/Cargo.toml') }}
+
+      - name: Installer cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit — vérification CVE
+        # --deny warnings : toute vulnérabilité (même warning) bloque le build
+        run: cargo audit --deny warnings
+        working-directory: SafeRoute/src/rust
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ⑤ TESTS RUST — cargo test
+  # ════════════════════════════════════════════════════════════════════════════
+  test-rust:
+    name: ⑤ Tests Rust (cargo test)
+    runs-on: ubuntu-latest
+    needs: audit-rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            SafeRoute/src/rust/target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('SafeRoute/src/rust/Cargo.toml') }}
+
+      - name: cargo fmt — vérification formatage
+        run: cargo fmt --check
+        working-directory: SafeRoute/src/rust
+
+      - name: cargo clippy — linting Rust (-D warnings = erreur sur warning)
+        run: cargo clippy -- -D warnings
+        working-directory: SafeRoute/src/rust
+
+      - name: cargo test — tests unitaires + intégration
+        run: cargo test --verbose
+        working-directory: SafeRoute/src/rust
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ⑥ BUILD WHEEL — maturin (matrice 3 OS × 3 Python)
+  # ════════════════════════════════════════════════════════════════════════════
+  build-wheel:
+    name: ⑥ Build wheel (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    needs: [test-python, test-rust]
+    strategy:
+      fail-fast: true  # arrête tous les builds si un échoue
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('SafeRoute/src/rust/Cargo.toml') }}
+
+      - name: Installer maturin
+        run: pip install "maturin>=1.5,<2.0"
+
+      - name: maturin build --release
+        run: python -m maturin build --release --out dist/
+        working-directory: SafeRoute
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: SafeRoute/dist/*.whl
+          retention-days: 7
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ⑦ AUDIT WHEEL — check-wheel-contents
+  # ════════════════════════════════════════════════════════════════════════════
+  audit-wheel:
+    name: ⑦ Audit wheel (check-wheel-contents)
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Télécharger le wheel Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-ubuntu-latest-py3.11
+          path: dist/
+
+      - name: Installer check-wheel-contents
+        run: pip install check-wheel-contents
+
+      - name: Vérifier le contenu du wheel
+        run: |
+          echo "=== Contenu du wheel ==="
+          python -m zipfile -l dist/saferoute-*.whl
+
+          echo "=== check-wheel-contents ==="
+          check-wheel-contents dist/saferoute-*.whl
+
+          echo "=== Vérification taille (< 5 MB) ==="
+          SIZE=$(stat -c%s dist/saferoute-*.whl)
+          MAX_SIZE=$((5 * 1024 * 1024))
+          if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+            echo "❌ Wheel trop lourd : $(($SIZE / 1024 / 1024)) MB > 5 MB"
+            echo "   Vérifiez [tool.maturin] exclude dans pyproject.toml"
+            exit 1
+          fi
+          echo "✅ Taille OK : $(($SIZE / 1024)) KB"
+
+          echo "=== Vérification absence de fichiers parasites ==="
+          python -m zipfile -l dist/saferoute-*.whl | grep -E "\.(graphml|csv\.gz|log|ipynb|bat)$" && {
+            echo "❌ Fichiers parasites détectés dans le wheel"
+            exit 1
+          } || echo "✅ Aucun fichier parasite"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ⑧ DOCUMENTATION — mkdocs build
+  # ════════════════════════════════════════════════════════════════════════════
+  docs:
+    name: ⑧ Documentation (mkdocs build)
+    runs-on: ubuntu-latest
+    needs: check-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Installer mkdocs et dépendances
+        run: |
+          pip install --upgrade pip
+          pip install mkdocs mkdocstrings[python] mkdocs-material \
+                      osmnx networkx geopandas shapely scipy numpy \
+                      httpx matplotlib folium platformdirs
+
+      - name: mkdocs build --strict
+        # --strict : toute erreur ou warning devient une erreur fatale
+        run: mkdocs build --strict --verbose
+        working-directory: SafeRoute
+
+      - name: Déployer sur GitHub Pages (production uniquement)
+        if: github.event.inputs.target == 'pypi'
+        run: mkdocs gh-deploy --force --clean
+        working-directory: SafeRoute
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # ⑨ PUBLICATION — maturin publish
+  # ════════════════════════════════════════════════════════════════════════════
+  publish:
+    name: ⑨ Publication → ${{ github.event.inputs.target }}
+    runs-on: ubuntu-latest
+    needs: [audit-wheel, docs]
+    # Permissions OIDC pour publication sans token (recommandé PyPI)
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Installer maturin
+        run: pip install "maturin>=1.5,<2.0"
+
+      - name: Récapitulatif avant publication
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  PUBLICATION SafeRoute"
+          echo "  Cible    : ${{ github.event.inputs.target }}"
+          echo "  Version  : $(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          echo "  Commit   : ${{ github.sha }}"
+          echo "  Ref      : ${{ github.ref }}"
+          echo "════════════════════════════════════════"
+        working-directory: SafeRoute
+
+      - name: Publier sur ${{ github.event.inputs.target }}
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.target }}" = "testpypi" ]; then
+            python -m maturin publish \
+              --repository testpypi \
+              --skip-existing
+          else
+            python -m maturin publish \
+              --skip-existing
+          fi
+        working-directory: SafeRoute
+
+      - name: Créer une GitHub Release (production uniquement)
+        if: github.event.inputs.target == 'pypi'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "SafeRoute ${{ github.ref_name }}"
+          body_path: SafeRoute/CHANGELOG.md
+          draft: false
+          prerelease: false

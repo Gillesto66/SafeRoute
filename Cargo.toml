@@ -1,0 +1,30 @@
+# Fait par Gillesto
+# Cargo.toml — Workspace Rust racine
+#
+# Ce fichier est lu par maturin via [tool.maturin] manifest-path dans pyproject.toml.
+# Il déclare un workspace contenant un seul membre : le crate saferoute-core.
+#
+# Pourquoi un workspace à la racine ?
+#   - Permet à `cargo test` et `cargo build` de fonctionner depuis SafeRoute/
+#   - Centralise les profils de compilation (release, dev)
+#   - Prépare l'ajout futur de crates supplémentaires (ex: saferoute-cli)
+
+[workspace]
+members  = ["src/rust"]
+resolver = "2"
+
+# ── Profil de développement ───────────────────────────────────────────────────
+# Utilisé par `cargo build` et `maturin develop` (sans --release)
+[profile.dev]
+opt-level = 0       # pas d'optimisation → compilation rapide
+debug     = true    # symboles de debug inclus
+
+# ── Profil de release ─────────────────────────────────────────────────────────
+# Utilisé par `cargo build --release` et `maturin build --release`
+# Ces paramètres sont hérités par le crate membre src/rust/
+[profile.release]
+opt-level     = 3   # optimisation maximale
+lto           = true  # Link-Time Optimization → réduit la taille du .so et améliore les perfs
+codegen-units = 1   # un seul codegen unit → meilleure optimisation inter-fonctions
+strip         = true  # supprime les symboles de debug du binaire final
+panic         = "abort"  # pas de stack unwinding → binaire plus petit, légèrement plus rapide
