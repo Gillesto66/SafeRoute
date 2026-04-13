@@ -15,6 +15,9 @@ repo_url: https://github.com/Gillesto66/SafeRoute
 repo_name: Gillesto66/SafeRoute
 edit_uri: edit/main/docs/
 
+# Nécessaire pour GitHub Pages avec sous-répertoire
+use_directory_urls: true
+
 # Thème Material — moderne, responsive, recherche intégrée
 theme:
   name: material

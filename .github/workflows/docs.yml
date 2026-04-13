@@ -1,0 +1,80 @@
+# Fait par Gillesto
+# docs.yml — Déploiement automatique de la documentation sur GitHub Pages
+#
+# Déclenché sur :
+#   - push sur main (déploiement automatique)
+#   - workflow_dispatch (déclenchement manuel)
+#
+# Prérequis GitHub :
+#   1. Settings → Pages → Source : "GitHub Actions"
+#   2. (pas besoin de branche gh-pages — ce workflow gère tout)
+
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Ne redéploie que si la doc ou le code source change
+      - "docs/**"
+      - "mkdocs.yml"
+      - "src/saferoute/**/*.py"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:  # déclenchement manuel depuis l'onglet Actions
+
+# Permissions nécessaires pour écrire sur GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un seul déploiement à la fois
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy-docs:
+    name: Build & Deploy MkDocs
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # nécessaire pour mkdocs git-revision-date
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Installer mkdocs et dépendances
+        run: |
+          pip install --upgrade pip
+          pip install \
+            mkdocs>=1.5 \
+            mkdocstrings[python]>=0.25 \
+            mkdocs-material>=9.5 \
+            osmnx networkx geopandas shapely scipy numpy \
+            httpx matplotlib folium platformdirs \
+            fastapi pydantic
+        working-directory: SafeRoute
+
+      - name: Build documentation
+        run: mkdocs build --strict --verbose
+        working-directory: SafeRoute
+
+      - name: Upload artifact GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: SafeRoute/site/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
